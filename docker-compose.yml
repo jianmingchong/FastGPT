@@ -22,14 +22,19 @@ services:
       - POSTGRES_DB=postgres
     volumes:
       - ./pg/data:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD', 'pg_isready', '-U', 'postgres', '-d', 'aiproxy']
+      interval: 5s
+      timeout: 5s
+      retries: 10
   mongo:
     image: mongo:5.0.18 # dockerhub
     # image: registry.cn-hangzhou.aliyuncs.com/fastgpt/mongo:5.0.18 # 阿里云
     # image: mongo:4.4.29 # cpu不支持AVX时候使用
     container_name: mongo
     restart: always
-    # ports:
-    #   - 27017:27017
+    ports:
+      - 27017:27017
     networks:
       - fastgpt
     command: mongod --keyFile /data/mongodb.key --replSet rs0
@@ -72,39 +77,45 @@ services:
   redis:
     image: redis:7.2-alpine
     container_name: redis
-    # ports:
-    # - 6379:6379
+    ports:
+      - 6379:6379
     networks:
       - fastgpt
     restart: always
     command: |
       redis-server --requirepass mypassword --loglevel warning --maxclients 10000 --appendonly yes --save 60 10 --maxmemory 4gb --maxmemory-policy noeviction
+    healthcheck:
+      test: ['CMD', 'redis-cli', '-a', 'mypassword', 'ping']
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 30s
     volumes:
       - ./redis/data:/data
 
   # fastgpt
   sandbox:
     container_name: sandbox
-    image: ghcr.io/labring/fastgpt-sandbox:v4.9.6 # git
-    # image: registry.cn-hangzhou.aliyuncs.com/fastgpt/fastgpt-sandbox:v4.9.6 # 阿里云
+    image: ghcr.io/labring/fastgpt-sandbox:v4.9.7-fix2 # git
+    # image: registry.cn-hangzhou.aliyuncs.com/fastgpt/fastgpt-sandbox:v4.9.7-fix2 # 阿里云
     networks:
       - fastgpt
     restart: always
-  fastgpt-mcp-server:
-    container_name: fastgpt-mcp-server
-    image: ghcr.io/labring/fastgpt-mcp_server:v4.9.6 # git
-    # image: registry.cn-hangzhou.aliyuncs.com/fastgpt/fastgpt-mcp_server:v4.9.6 # 阿里云
-    ports:
-      - 3005:3000
-    networks:
-      - fastgpt
-    restart: always
-    environment:
-      - FASTGPT_ENDPOINT=http://fastgpt:3000
+  # fastgpt-mcp-server:
+  #   container_name: fastgpt-mcp-server
+  #   image: ghcr.io/labring/fastgpt-mcp_server:v4.9.7-fix2 # git
+  #   # image: registry.cn-hangzhou.aliyuncs.com/fastgpt/fastgpt-mcp_server:v4.9.7-fix2 # 阿里云
+  #   ports:
+  #     - 3005:3000
+  #   networks:
+  #     - fastgpt
+  #   restart: always
+  #   environment:
+  #     - FASTGPT_ENDPOINT=http://fastgpt:3000
   fastgpt:
     container_name: fastgpt
-    image: ghcr.io/labring/fastgpt:v4.9.6 # git
-    # image: registry.cn-hangzhou.aliyuncs.com/fastgpt/fastgpt:v4.9.6 # 阿里云
+    image: ghcr.io/labring/fastgpt:v4.9.7-fix2 # git
+    # image: registry.cn-hangzhou.aliyuncs.com/fastgpt/fastgpt:v4.9.7-fix2 # 阿里云
     ports:
       - 3000:3000
     networks:
@@ -120,9 +131,9 @@ services:
       # root 密码，用户名为: root。如果需要修改 root 密码，直接修改这个环境变量，并重启即可。
       - DEFAULT_ROOT_PSW=1234
       # AI Proxy 的地址，如果配了该地址，优先使用
-      - AIPROXY_API_ENDPOINT=http://aiproxy:3000
+      # - AIPROXY_API_ENDPOINT=http://aiproxy:3000
       # AI Proxy 的 Admin Token，与 AI Proxy 中的环境变量 ADMIN_KEY
-      - AIPROXY_API_TOKEN=aiproxy
+      # - AIPROXY_API_TOKEN=aiproxy
       # 数据库最大连接数
       - DB_MAX_LINK=30
       # 登录凭证密钥
@@ -134,7 +145,8 @@ services:
       # MongoDB 连接参数. 用户名myusername,密码mypassword。
       - MONGODB_URI=mongodb://myusername:mypassword@mongo:27017/fastgpt?authSource=admin
       # pg 连接参数
-      - PG_URL=postgresql://username:password@0.0.0.0:5432/postgres
+      # - PG_URL=postgresql://username:password@pg:5432/postgres
+      - PG_URL=postgresql://username:password@pg:5432/postgres
       # Redis 连接参数
       - REDIS_URL=redis://default:mypassword@redis:6379
       # sandbox 地址
@@ -153,55 +165,56 @@ services:
       # 对话文件过期天数
       - CHAT_FILE_EXPIRE_TIME=7
     volumes:
-      - ./config.json:/app/data/config.json
+      # - ./config.json:/app/data/config.json
+      - ./config:/app/data/config
 
   # AI Proxy
-  aiproxy:
-    image: ghcr.io/labring/aiproxy:v0.1.7
-    # image: registry.cn-hangzhou.aliyuncs.com/labring/aiproxy:v0.1.7 # 阿里云
-    container_name: aiproxy
-    restart: unless-stopped
-    depends_on:
-      aiproxy_pg:
-        condition: service_healthy
-    networks:
-      - fastgpt
-    environment:
-      # 对应 fastgpt 里的AIPROXY_API_TOKEN
-      - ADMIN_KEY=aiproxy
-      # 错误日志详情保存时间（小时）
-      - LOG_DETAIL_STORAGE_HOURS=1
-      # 数据库连接地址
-      - SQL_DSN=postgres://postgres:aiproxy@aiproxy_pg:5432/aiproxy
-      # 最大重试次数
-      - RETRY_TIMES=3
-      # 不需要计费
-      - BILLING_ENABLED=false
-      # 不需要严格检测模型
-      - DISABLE_MODEL_CONFIG=true
-    healthcheck:
-      test: ['CMD', 'curl', '-f', 'http://localhost:3000/api/status']
-      interval: 5s
-      timeout: 5s
-      retries: 10
-  aiproxy_pg:
-    image: pgvector/pgvector:0.8.0-pg15 # docker hub
-    # image: registry.cn-hangzhou.aliyuncs.com/fastgpt/pgvector:v0.8.0-pg15 # 阿里云
-    restart: unless-stopped
-    container_name: aiproxy_pg
-    volumes:
-      - ./aiproxy_pg:/var/lib/postgresql/data
-    networks:
-      - fastgpt
-    environment:
-      TZ: Asia/Shanghai
-      POSTGRES_USER: postgres
-      POSTGRES_DB: aiproxy
-      POSTGRES_PASSWORD: aiproxy
-    healthcheck:
-      test: ['CMD', 'pg_isready', '-U', 'postgres', '-d', 'aiproxy']
-      interval: 5s
-      timeout: 5s
-      retries: 10
+  # aiproxy:
+  #   image: ghcr.io/labring/aiproxy:v0.1.7
+  #   # image: registry.cn-hangzhou.aliyuncs.com/labring/aiproxy:v0.1.7 # 阿里云
+  #   container_name: aiproxy
+  #   restart: unless-stopped
+  #   depends_on:
+  #     aiproxy_pg:
+  #       condition: service_healthy
+  #   networks:
+  #     - fastgpt
+  #   environment:
+  #     # 对应 fastgpt 里的AIPROXY_API_TOKEN
+  #     - ADMIN_KEY=aiproxy
+  #     # 错误日志详情保存时间（小时）
+  #     - LOG_DETAIL_STORAGE_HOURS=1
+  #     # 数据库连接地址
+  #     - SQL_DSN=postgres://postgres:aiproxy@aiproxy_pg:5432/aiproxy
+  #     # 最大重试次数
+  #     - RETRY_TIMES=3
+  #     # 不需要计费
+  #     - BILLING_ENABLED=false
+  #     # 不需要严格检测模型
+  #     - DISABLE_MODEL_CONFIG=true
+  #   healthcheck:
+  #     test: ['CMD', 'curl', '-f', 'http://localhost:3000/api/status']
+  #     interval: 5s
+  #     timeout: 5s
+  #     retries: 10
+  # aiproxy_pg:
+  #   image: pgvector/pgvector:0.8.0-pg15 # docker hub
+  #   # image: registry.cn-hangzhou.aliyuncs.com/fastgpt/pgvector:v0.8.0-pg15 # 阿里云
+  #   restart: unless-stopped
+  #   container_name: aiproxy_pg
+  #   volumes:
+  #     - ./aiproxy_pg:/var/lib/postgresql/data
+  #   networks:
+  #     - fastgpt
+  #   environment:
+  #     TZ: Asia/Shanghai
+  #     POSTGRES_USER: postgres
+  #     POSTGRES_DB: aiproxy
+  #     POSTGRES_PASSWORD: aiproxy
+  #   healthcheck:
+  #     test: ['CMD', 'pg_isready', '-U', 'postgres', '-d', 'aiproxy']
+  #     interval: 5s
+  #     timeout: 5s
+  #     retries: 10
 networks:
   fastgpt:
